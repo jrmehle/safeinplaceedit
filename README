@@ -1,0 +1,252 @@
+= Safe In Place Editing v1.0 (2009-12-11)
+
+Early versions of Ruby On Rails shipped with an in-place editing mechanism
+which allowed simple edits to be performed on model attribute values without
+having to render a full 'edit' view for that model.
+
+Unfortunately this suffered a significant vulnerability which basically meant
+that any in-place editor field was an open JavaScript console, much to the
+presumed delight of malicious users. In-place editing features were later moved
+into a plug-in and the cross-site scripting fault was fixed; this simple plugin
+is available from GitHub:
+
+http://github.com/rails/in_place_editing
+
+I found the plugin inadequate and felt compelled to write a replacement. The
+Safe In Place Editing plugin is the result and the rationale for its creation,
+along with instructions on its use are given below.
+
+This plug-in would not exist without the original in-place editor code,
+from which it borrows very heavily. My thanks to all involved.
+
+
+== Installation
+
+  script/plugin install svn://rubyforge.org/var/svn/safeinplaceedit/safe_in_place_editing
+
+
+==  InPlaceEditing problems and Safe In Place Editing solutions
+=== 1: InPlaceEditing's XSS fixes prevent other features from working
+
+At the time of writing the now-fixed plugin escapes values written into the
+view coming from the database and values written into the view after a user
+makes an edit, avoiding the vulnerability which it used to introduce. This
+introduces some problems though:
+
+1. It's no longer possible to deliberately insert HTML at all, as per older
+   documentation examples for Textile and Markaby-based in-place editors.
+
+2. The in-place editor form, when shown, shows the _literal_ escaped text (so
+   you get double-escape problems, with things like "&amp;" showing up instead
+   of "&") because it uses a "getText" call in the JS domain that reads
+   "innerHTML" of the <span> used to mark up the text to be used for
+   editing. There are two ways around this:
+
+   * Patch getText to a better implementation as described on the
+     scriptalicious Wiki (why is this not in their core release?!)
+
+     http://github.com/madrobby/scriptaculous/wikis/ajax-inplaceeditor
+
+       Object.extend(Ajax.InPlaceEditor.prototype, {
+           getText: function() {
+               return this.element.childNodes[0]           ?
+                      this.element.childNodes[0].nodeValue : '';
+           }
+       });
+
+   * Have a custom method to return the unescaped value of the field
+     sitting on the server side (again, as for the Textile and Markaby
+     examples) - but this means one more controller method and a server
+     round-trip each time an editor is shown.
+
+Safe In Place Editing patches getText as described above, escapes values in
+the initially created form and its auto-generated helpers, if used, escape
+updated values when rendering them for the in-place view update. You can
+defeat escaping in the safe_in_place_editor_field helper method with a
+special override parameter but this is strongly discouraged.
+
+You must include the JavaScript code for the getText patch and supporting
+methods when using the plugin:
+
+  <%= javascript_include_tag( "safe_in_place_editing/safe_in_place_editing" ) %>
+
+
+=== 2: InPlaceEditing bypasses optimistic locking
+
+Optimistic locking is a safety feature in Rails which even the core
+developers seem to forget about sometimes! It associates a version number
+with models. If two users are viewing an 'edit' page for that model and one of
+them submits their form first, then when the other user tries to submit their
+own edits, Rails will detect that the associated version number on their form
+is too old and raise a locking error. Without this, the second user would be
+able to just overwrite the edits made by the first user without anybody
+realising this error had happened.
+
+Unfortunately the stock InPlaceEditing plugin is written in such a way that
+locking is bypassed; an in-place editor always succeeds, no matter how out of
+date the view in which the editor resides happens to be.
+
+One might take the approach of the anti-forgery request mechanism patch needed
+to get the in-place edit plug-in working with Rails 2, extending the ":with" 
+key's value in the options hash with a query string passing the lock_version
+through:
+
+    if ( object.respond_to?( :lock_version ) )
+      in_place_editor_options[ :with ] ||= "Form.serialize(form)"
+      in_place_editor_options[ :with ]  += " + '&lock_version=#{ object.lock_version }'"
+    end
+
+The update code on the server side could manually check this against the
+object it just found in the database. Unfortunately the client JavaScript
+code is static, so after a first update the form itself is out of date,
+passing an old lock version through and all subsequent update attempts
+fail until the whole view is reloaded.
+
+    lock_version = nil
+    lock_version = @item.lock_version.to_s if ( @item.respond_to?( :lock_version ) )
+
+    if ( lock_version != params[ :lock_version ] )
+      # Somebody else already edited this item. Do "something"
+      # (see later).
+    else
+      @item.update_attribute( attribute, params[ :value ] )
+    end
+
+We might attempt to write out JS which assigns global variables unique to
+each form with the initial lock value. An on-complete JS handler could
+then increment the lock version at the client side. This seems ridiculously
+over complicated given the task at hand, requires one to override the
+default on-complete handler, bypass or extend the Rails plug-in (since it
+offers no interface to change the on-complete handler details) and the
+client might still get out of sync with the server's lock versions. Since
+there is little alternative, however, Safe In Place Editing takes this 
+heavyweight approach, using extra JS support methods to try and reduce the
+inline code baggage.
+
+
+=== 3: InPlaceEditing's error handling seems to be faulty
+
+In theory, returning a 500 error should lead to the onFailure handler running
+in the JS domain, but when used from Rails 2.0.2, just about all properties of
+the 'transport' object used in the default handler function are undefined with
+the standard InPlaceEditing plugin. As a result, no alert box can be shown to the user. The onComplete handler is *always* run, regardless of whether the
+request returns a 2xx or other status code and this leads to numerous problems
+when trying to elegantly handle errors.
+
+The JavaScript assistance functions included with SafeInPlaceEditing take
+care of error handling for you. If the on-failure code seems to be having
+trouble then the on-complete code will take over. These functions are also
+used to support optimistic locking as described above.
+
+
+== Usage examples
+
+First make sure that you include the plugin resources in any view which wants
+to use its facilities:
+
+  <%= javascript_include_tag( "safe_in_place_editing/safe_in_place_editing" ) %>
+
+In your controller, declare the models and model attribute names which are to
+be available for in-place editing. These declarations cause actions to be
+defined in your controller on your behalf; the actions handle the XHR requests
+from the client JavaScript code executing in web browsers when users alter attributes of a model via an in-place editor control.
+
+  safe_in_place_edit_for( :customer, :title )
+  safe_in_place_edit_for( :customer, :code  )
+
+The above sets up a controller so it allows edits to a model called "Customer"
+for attributes "title" and "code".
+
+In the view, wherever you want an editor to be available, add a call to the
+"safe_in_place_editor_field" method. For example, in the case of the controller
+for the "Customer" model above, we might produce a 'show' view for a model
+instance stored in "<tt>@customer</tt>" which includes:
+
+  <strong>Title:</strong>
+  <%= safe_in_place_editor_field( @customer, :title ) %>
+  <br />
+
+  <strong>Code:</strong>
+  <%= safe_in_place_editor_field( @customer, :code ) %>
+  <br />
+
+If you're familiar with the API for the InPlaceEditing plugin, you may be
+surprised at the use of "<tt>@customer</tt>" rather than ":customer" in the
+call to "safe_in_place_editor_field". In fact, this call supports _either_
+form - you can pass a symbol "<tt>:foo</tt>", in which case the plugin assumes
+that an instance variable "<tt>@foo</tt>" is available - or you can just pass
+in the variable value directly. Judging by Google searches this quirk of the InPlaceEditing API seemed to trip up quite a few people and I saw no reason to
+duplicate that quirk with Safe In Place Editing!
+
+
+=== Boolean values
+
+As an added bonus, Safe In Place Editing has special support for boolean values
+in models. If you have a true/false field, an in-place editor will show a small
+pop-up menu including "Yes" and "No" entries.
+
+Suppose we have a Task model and the task can be marked as currently active, or
+inactive. To this end it has an attribute "active" which is a boolean property.
+We can create an in-place editor for this by first enabling editing in the
+controller for Tasks:
+
+  safe_in_place_edit_for( :task, :active )
+
+...then in the view, inserting an in-place editor where we might otherwise have
+just shown the value of the 'active' attribute as a simple piece of text:
+
+  <strong>Active:</strong>
+  <%= safe_in_place_editor_field( @task, :active ) %>
+
+It's that simple; the plugin code takes care of the rest. There are numerous
+additional options which can be passed to the various calls; see the API
+documentation for InPlaceEditing for the basics, then check the API
+documentation here for any exceptions or additions.
+
+
+=== Suggested CSS
+
+You can style in-place editors however you like; the default Rails scaffold
+styles may be sufficient. If using scaffolding, though, you might like to try
+out the following additional styles as I think they give good results:
+
+  form.inplaceeditor-form {
+    position: absolute;
+    background: white;
+    border: 2px solid #888;
+    text-align: center;
+  }
+
+  form.inplaceeditor-form input[ type="text" ] {
+    margin: 5px;
+    width: 90%;
+  }
+
+  form.inplaceeditor-form input[ type="submit" ] {
+    margin: 5px;
+    float: left;
+  }
+
+  form.inplaceeditor-form a {
+    margin: 5px;
+    float: right;
+  }
+
+  form.inplaceeditor-form select {
+    margin: 5px;
+    float: left;
+  }
+
+
+== Contacts
+
+Feel free to contact me at "ahodgkin@rowing.org.uk" with questions, patches
+or suggestions. Or even praise, if you reckon this is worth it! Alternatively
+visit the RubyForge project page and use the issue tracker or forums there:
+
+http://rubyforge.org/projects/safeinplaceedit
+
+
+= Copyright
+
+Copyright (c) 2008, 2009 Hipposoft, released under the MIT license.
