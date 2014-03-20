@@ -1,5 +1,15 @@
 = Safe In Place Editing v1.0 (2009-12-11)
 
+== NOTICE
+
+A gemified version of this project has been made available by the original author
+on Github and RubyGems.
+
+https://github.com/pond/safe_in_place_editing
+
+https://rubygems.org/gems/safe_in_place_editing
+
+
 Early versions of Ruby On Rails shipped with an in-place editing mechanism
 which allowed simple edits to be performed on model attribute values without
 having to render a full 'edit' view for that model.
@@ -87,7 +97,7 @@ locking is bypassed; an in-place editor always succeeds, no matter how out of
 date the view in which the editor resides happens to be.
 
 One might take the approach of the anti-forgery request mechanism patch needed
-to get the in-place edit plug-in working with Rails 2, extending the ":with" 
+to get the in-place edit plug-in working with Rails 2, extending the ":with"
 key's value in the options hash with a query string passing the lock_version
 through:
 
@@ -119,7 +129,7 @@ over complicated given the task at hand, requires one to override the
 default on-complete handler, bypass or extend the Rails plug-in (since it
 offers no interface to change the on-complete handler details) and the
 client might still get out of sync with the server's lock versions. Since
-there is little alternative, however, Safe In Place Editing takes this 
+there is little alternative, however, Safe In Place Editing takes this
 heavyweight approach, using extra JS support methods to try and reduce the
 inline code baggage.
 
